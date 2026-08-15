@@ -10,7 +10,7 @@
 
 <p align="center"><strong>Interaktív bash szkript Debian/Ubuntu VPS-ek swap fájl létrehozásához és mérsékelt memóriaoptimalizáláshoz.</strong></p>
 
-<p align="center">VPS-barát swap méretezés, konzisztens meglévő-fájl kezelés, biztos sysctl perzisztencia, valódi napló-retention — biztonsági mentésekkel, dry-run móddal és visszaállítási lehetőséggel.</p>
+<p align="center">VPS-barát swap méretezés, konzisztens meglévő-fájl kezelés, biztos sysctl perzisztencia — biztonsági mentésekkel, dry-run móddal és visszaállítási lehetőséggel.</p>
 
 ---
 
@@ -24,9 +24,6 @@
 - **Swap fájl létrehozása és aktiválása** — `fallocate` vagy `dd` módszerrel, `/etc/fstab` bejegyzéssel, `chmod 600` jogosultsággal
 - **Memória fókuszú sysctl finomhangolás** — kizárólag `vm.swappiness`, `vm.vfs_cache_pressure`, `vm.dirty_ratio`, `vm.dirty_background_ratio` (hálózati tuning nélkül)
 - **Garantált perzisztencia** — a kívánt sysctl értékek mindig bekerülnek az `/etc/sysctl.conf`-ba, így reboot után is érvényben maradnak
-- **Opcionális memória monitorozás** — cron job telepítése óránkénti memória és swap használat naplózáshoz
-- **Valódi napló-retention** — napi bontású dátumozott logfájlok, 7 napnál régebbiek automatikusan törlődnek
-- **Automatikus cron telepítés** — ha hiányzik a `cron` csomag, a script felajánlja a telepítését (`apt install cron`)
 - **Dry-run mód** — `--dry-run` kapcsolóval minden művelet szimulálható, tényleges módosítás nélkül
 - **Visszaállítás** — `--rollback` kapcsolóval az eredeti sysctl értékek visszaállíthatók (csak a script által kezelt kulcsok)
 - **Interaktív és automatikus mód** — alapértelmezetten minden lépésnél megerősítést kér, `--force` / `-y` flaggel teljesen automatikus
@@ -40,7 +37,6 @@
 
 - Debian 12/13 vagy Ubuntu 22.04/24.04
 - Root jogosultság (`sudo`)
-- Internetkapcsolat (opcionális, a cron telepítéséhez)
 
 ---
 
@@ -77,10 +73,7 @@ sudo ./swap_optimalizalo.sh --dry-run
 | `--swap-size <MB>` | Swap fájl méretének kézi megadása MB-ban (felülbírálja az automatikus kalkulációt) |
 | `--swap-file <PATH>` | Swap fájl elérési útja (alapértelmezett: `/swapfile`) |
 | `--no-tune` | Csak swap fájl létrehozása — sysctl finomhangolás nélkül |
-| `--monitor` | Monitorozó cron job telepítése (nem kérdez, automatikusan telepíti) |
-| `--no-monitor` | Monitorozó cron job kihagyása (nem kérdez, automatikusan kihagyja) |
 | `--remove-swap` | Swap fájl + `/etc/fstab` bejegyzés eltávolítása |
-| `--remove-monitor` | Monitorozó cron job, script és naplófájlok eltávolítása |
 | `--force`, `-y` | Interaktív megerősítések átugrása — teljesen automatikus futtatás |
 | `--help` | Súgó megjelenítése |
 
@@ -136,11 +129,10 @@ Műveletek megerősítése
   A következő műveletek kerülnek végrehajtásra:
     - Swap fájl létrehozása: /swapfile (2.0 GB)
     - Rendszerparaméterek (sysctl) finomhangolása
-    - Memória monitorozás (cron job)
 
 [?] Folytatjuk a műveleteket? [y/N]: y
 
-1/3 Swap fájl létrehozása
+1/2 Swap fájl létrehozása
 
 [INFO] Swap fájl létrehozása: /swapfile (2.0 GB)...
 Setting up swapspace version 1, size = 2 GiB (2147479552 bytes)
@@ -148,7 +140,7 @@ no label, UUID=ad88f124-5c49-4dee-ae1e-6749fff2d7ec
 [OK]   Swap fájl létrehozva és aktiválva: /swapfile
 [OK]   /swapfile hozzáadva az /etc/fstab-hoz
 
-2/3 Rendszerparaméterek finomhangolása
+2/2 Rendszerparaméterek finomhangolása
 
 [?] Alkalmazzuk a sysctl optimalizációkat? [Y/n]: y
 Rendszerparaméterek finomhangolása (sysctl)
@@ -162,12 +154,6 @@ Rendszerparaméterek finomhangolása (sysctl)
 
 [OK]   sysctl -p alkalmazása...
 
-[?] Telepítsünk memória monitorozó cron job-ot? [y/N]: y
-3/3 Monitorozás telepítése
-
-[OK]   Monitorozó cron job telepítve (minden 1 órában)
-[OK]   Monitor log: /var/log/swap_monitor_ÉÉÉÉHHNN.log (napi bontás, 7 nap retention)
-
 ═══ KÉSZ ═══
 
   Swap fájl:     /swapfile (2.0 GB)
@@ -178,7 +164,6 @@ Rendszerparaméterek finomhangolása (sysctl)
   /swapfile file    2G   0B   10
 
   Naplófájl:     /var/log/swap_optimalizalo.log
-  Monitor log:   /var/log/swap_monitor_ÉÉÉÉHHNN.log
 ```
 
 ---
@@ -190,9 +175,6 @@ Ha bármilyen probléma adódna, a módosítások visszaállíthatók:
 ```bash
 # sysctl értékek visszaállítása
 sudo ./swap_optimalizalo.sh --rollback
-
-# Monitorozás eltávolítása
-sudo ./swap_optimalizalo.sh --remove-monitor
 
 # Swap fájl eltávolítása
 sudo ./swap_optimalizalo.sh --remove-swap
@@ -209,8 +191,6 @@ A rollback csak a script által kezelt 4 sysctl kulcsot állítja vissza.
 - A swap fájl létrehozása lemezterületet foglal — győződj meg róla, hogy van elég szabad hely a megadott elérési úton
 - A sysctl módosítások azonnal életbe lépnek és **reboot után is megmaradnak** (`/etc/sysctl.conf`-ba írva)
 - Ha a rendszeren a `/swapfile`-on kívül más swap is aktív, a script **nem bántja** azokat
-- Ha a `cron` csomag nincs telepítve, a script felajánlja a telepítését a monitorozáshoz
-- A monitor logfájlok napi bontásúak (`swap_monitor_YYYYMMDD.log`), a 7 napnál régebbiek automatikusan törlődnek
 
 ---
 
@@ -222,9 +202,7 @@ A rollback csak a script által kezelt 4 sysctl kulcsot állítja vissza.
 | `/etc/fstab` | Swap bejegyzés hozzáadva (boot után automatikus aktiválás) |
 | `/etc/sysctl.conf` | Optimalizált rendszerparaméterek (4 memória kulcs) |
 | `/var/log/swap_optimalizalo.log` | Részletes műveleti napló |
-| `/var/log/swap_monitor_YYYYMMDD.log` | Napi bontású memória monitor log (7 nap retention) |
 | `/var/backups/swap_optimalizalo/` | Biztonsági mentések könyvtára |
-| `/usr/local/bin/swap_monitor.sh` | Monitorozó script (ha telepítve) |
 
 ---
 
