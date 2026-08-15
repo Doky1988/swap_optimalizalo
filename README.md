@@ -70,7 +70,7 @@ sudo ./swap_optimalizalo.sh --dry-run
 |----------|--------|
 | `--dry-run` | Csak szimuláció — mindent megjelenít, de nem módosít semmit |
 | `--rollback` | Eredeti sysctl beállítások visszaállítása a biztonsági mentésből |
-| `--swap-size <MB>` | Swap fájl méretének kézi megadása MB-ban (felülbírálja az automatikus kalkulációt) |
+| `--swap-size <MB>` | Swap fájl méretének kézi megadása MB-ban (min. 512, felülbírálja az automatikus kalkulációt) |
 | `--swap-file <PATH>` | Swap fájl elérési útja (alapértelmezett: `/swapfile`) |
 | `--no-tune` | Csak swap fájl létrehozása — sysctl finomhangolás nélkül |
 | `--remove-swap` | Swap fájl + `/etc/fstab` bejegyzés eltávolítása |
@@ -87,7 +87,7 @@ sudo ./swap_optimalizalo.sh --dry-run
 | 5–63 GB | 4 GB | 16 GB RAM → **4 GB** swap |
 | ≥ 64 GB | 8 GB | 128 GB RAM → **8 GB** swap |
 
-Kézi méret megadása a `--swap-size` kapcsolóval lehetséges.
+Kézi méret megadása a `--swap-size` kapcsolóval lehetséges (minimum 512 MB).
 
 ---
 
