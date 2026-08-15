@@ -20,14 +20,8 @@ VM_DIRTY_RATIO=10
 # kiírni a dirty adatokat, mielőtt a dirty_ratio-t elérné.
 VM_DIRTY_BACKGROUND_RATIO=5
 
-# Monitorozás
-DEFAULT_MONITOR_INTERVAL_HOURS=1
-DEFAULT_MONITOR_RETENTION_DAYS=7
-
 BACKUP_DIR="/var/backups/swap_optimalizalo"
 LOG_FILE="/var/log/swap_optimalizalo.log"
-MONITOR_LOG_DIR="/var/log"
-MONITOR_LOG_PREFIX="swap_monitor"
 
 # --- Színkódok ---------------------------------------------------------------
 C_RESET="\033[0m"
@@ -102,7 +96,7 @@ calc_swap_size_mb() {
 
     # VPS-barát méretezés:
     #   ≤ 4 GB RAM      → 2 GB swap
-    #   4-63 GB RAM     → 4 GB swap
+    #   5-63 GB RAM     → 4 GB swap
     #   ≥ 64 GB RAM     → 8 GB swap
     if [[ $ram_mb -le 4096 ]]; then
         swap_mb=2048
@@ -392,11 +386,13 @@ create_swap_file() {
             return 1
         fi
 
-        # 3. Jóváhagyás után: biztonságos swapoff, majd törlés
-        if ! deactivate_existing_swapfile "$swapfile"; then
-            die "A meglévő swap fájl lekapcsolása nem sikerült: %s" "$swapfile"
+        # 3. Jóváhagyás után: biztonságos swapoff, majd törlés (csak élő módban)
+        if [[ "$DRY_RUN" != "true" ]]; then
+            if ! deactivate_existing_swapfile "$swapfile"; then
+                die "A meglévő swap fájl lekapcsolása nem sikerült: %s" "$swapfile"
+            fi
+            rm -f "$swapfile"
         fi
-        rm -f "$swapfile"
     fi
 
     # --- Új fájl létrehozása ---
@@ -447,100 +443,6 @@ update_fstab() {
     cp /etc/fstab "$BACKUP_DIR/fstab.bak_$(date +%Y%m%d_%H%M%S)"
     printf "%-30s none swap sw,pri=%d 0 0\n" "$swapfile" "$SWAP_PRIORITY" >> /etc/fstab
     success "%s hozzáadva az /etc/fstab-hoz" "$swapfile"
-}
-
-# --- Monitorozás -------------------------------------------------------------
-install_monitor() {
-    local interval="$DEFAULT_MONITOR_INTERVAL_HOURS"
-
-    # Cron bejegyzés ellenőrzése
-    if crontab -l 2>/dev/null | grep -q "swap_monitor.sh"; then
-        info "A monitorozó cron job már telepítve van."
-        return 0
-    fi
-
-    # crontab elérhetőség ellenőrzése
-    if ! command -v crontab &>/dev/null; then
-        if [[ "$DRY_RUN" == "true" ]]; then
-            printf "  ${C_CYAN}[DRY-RUN]${C_RESET} crontab hiányzik → apt install -y cron szükséges\n"
-        else
-            if confirm "A cron csomag nincs telepítve. Telepítsük? (apt install cron)" "y"; then
-                if ! apt-get update -qq; then
-                    die "A csomaglista frissítése nem sikerült. Próbáld manuálisan: apt-get update && apt install -y cron"
-                fi
-                if ! apt install -y cron; then
-                    die "A cron csomag telepítése nem sikerült. Próbáld manuálisan: apt install -y cron"
-                fi
-                success "Cron csomag telepítve."
-            else
-                info "Monitorozás kihagyva — cron csomag nincs telepítve."
-                return 0
-            fi
-        fi
-    fi
-
-    # Monitor script létrehozása
-    local monitor_script="/usr/local/bin/swap_monitor.sh"
-    cat > "$monitor_script" << MONITOR_EOF
-#!/usr/bin/env bash
-LOG_DIR="${MONITOR_LOG_DIR}"
-LOG_PREFIX="${MONITOR_LOG_PREFIX}"
-MAX_DAYS=${DEFAULT_MONITOR_RETENTION_DAYS}
-LOG_FILE="\${LOG_DIR}/\${LOG_PREFIX}_\$(date +%Y%m%d).log"
-{
-    printf "=== %s ===\\n" "\$(date '+%Y-%m-%d %H:%M:%S')"
-    printf '%s\\n' '--- free -h ---'
-    free -h
-    printf '\\n%s\\n' '--- swapon --show ---'
-    swapon --show
-    printf '\\n%s\\n' '--- Memóriahasználat top 5 folyamat ---'
-    ps aux --sort=-%mem | head -6 | awk '{printf "  %-6s %-20s %s\\n", \$2, \$11, \$4"%"}'
-    printf '\\n\\n'
-} >> "\$LOG_FILE"
-# Retention: MAX_DAYS napnál régebbi naplófájlok törlése
-find "\$LOG_DIR" -maxdepth 1 -name "\${LOG_PREFIX}_*.log" -mtime +"\$MAX_DAYS" -delete 2>/dev/null || true
-MONITOR_EOF
-    chmod +x "$monitor_script"
-
-    if [[ "$DRY_RUN" == "true" ]]; then
-        printf "  ${C_CYAN}[DRY-RUN]${C_RESET} Monitor script: %s\n" "$monitor_script"
-        printf "  ${C_CYAN}[DRY-RUN]${C_RESET} Cron: 0 * * * * %s\n" "$monitor_script"
-        return 0
-    fi
-
-    # Cron job hozzáadása
-    local cron_line="0 */${interval} * * * ${monitor_script}"
-    (crontab -l 2>/dev/null || true; printf "%s\n" "$cron_line") | crontab -
-
-    success "Monitorozó cron job telepítve (minden %d órában)" "$interval"
-    success "Monitor log: ${C_CYAN}%s/%s_ÉÉÉÉHHNN.log${C_RESET} (napi bontás, %d nap retention)" \
-        "$MONITOR_LOG_DIR" "$MONITOR_LOG_PREFIX" "$DEFAULT_MONITOR_RETENTION_DAYS"
-}
-
-remove_monitor() {
-    if [[ "$DRY_RUN" == "true" ]]; then
-        printf "  ${C_CYAN}[DRY-RUN]${C_RESET} Monitor cron job eltávolítása\n"
-        return 0
-    fi
-
-    if command -v crontab &>/dev/null; then
-        if crontab -l 2>/dev/null | grep -q "swap_monitor.sh"; then
-            crontab -l 2>/dev/null | grep -v "swap_monitor.sh" | crontab - 2>/dev/null || true
-            success "Monitorozó cron job eltávolítva."
-        else
-            info "Nincs telepített monitorozó cron job."
-        fi
-    fi
-
-    if [[ -f /usr/local/bin/swap_monitor.sh ]]; then
-        rm -f /usr/local/bin/swap_monitor.sh
-        success "Monitor script törölve: /usr/local/bin/swap_monitor.sh"
-    fi
-
-    if find "$MONITOR_LOG_DIR" -maxdepth 1 -name "${MONITOR_LOG_PREFIX}_*.log" 2>/dev/null | grep -q .; then
-        find "$MONITOR_LOG_DIR" -maxdepth 1 -name "${MONITOR_LOG_PREFIX}_*.log" -delete 2>/dev/null || true
-        success "Monitor naplófájlok törölve: %s/%s_*.log" "$MONITOR_LOG_DIR" "$MONITOR_LOG_PREFIX"
-    fi
 }
 
 # --- Swap eltávolítás ---------------------------------------------------------
@@ -619,15 +521,6 @@ dry_run_summary() {
         printf "\n"
     fi
 
-    if [[ "$INSTALL_MONITOR" != "false" ]]; then
-        printf "  ${C_BOLD}Monitorozás:${C_RESET}\n"
-        printf "  ─────────────\n"
-        printf "  Cron: minden %d órában\n" "$DEFAULT_MONITOR_INTERVAL_HOURS"
-        printf "  Log:  ${C_CYAN}%s/%s_ÉÉÉÉHHNN.log${C_RESET} (napi bontás, %d nap retention)\n" \
-            "$MONITOR_LOG_DIR" "$MONITOR_LOG_PREFIX" "$DEFAULT_MONITOR_RETENTION_DAYS"
-        printf "\n"
-    fi
-
     banner "═══ A '--dry-run' miatt NEM történt módosítás ═══"
 }
 
@@ -645,10 +538,7 @@ Opciók:
   --swap-size <MB>       Swap fájl méretének kézi megadása MB-ban
   --swap-file <PATH>     Swap fájl elérési útja (alapértelmezett: /swapfile)
   --no-tune              Csak swap fájl létrehozása, sysctl finomhangolás nélkül
-  --monitor              Monitorozó cron job telepítése (alapértelmezett: kérdez)
-  --no-monitor           Monitorozó cron job KIHAGYÁSA
   --remove-swap         Swap fájl + /etc/fstab bejegyzés eltávolítása
-  --remove-monitor       Monitorozó cron job és script eltávolítása
   --force, -y            Interaktív megerősítések átugrása (automatikus mód)
   --help                 Ez a súgó
 
@@ -659,7 +549,6 @@ Példák:
   sudo ./swap_optimalizalo.sh --swap-size 8192 # 8 GB swap fájl
   sudo ./swap_optimalizalo.sh --rollback       # Visszaállítás
   sudo ./swap_optimalizalo.sh --remove-swap    # Swap fájl eltávolítása
-  sudo ./swap_optimalizalo.sh --remove-monitor # Monitorozás eltávolítása
 
 Swap méretezési logika (automatikus, ha nincs --swap-size):
   RAM ≤ 4 GB      → 2 GB swap
@@ -682,9 +571,7 @@ main() {
     SWAP_SIZE_MB=""
     SWAP_FILE="$DEFAULT_SWAP_FILE"
     NO_TUNE="false"
-    INSTALL_MONITOR="auto"
     NO_INTERACTIVE="false"
-    REMOVE_MONITOR="false"
     REMOVE_SWAP="false"
 
     # CLI paraméterek feldolgozása
@@ -695,9 +582,6 @@ main() {
             --swap-size)         SWAP_SIZE_MB="$2"; shift 2 ;;
             --swap-file)         SWAP_FILE="$2"; shift 2 ;;
             --no-tune)           NO_TUNE="true"; shift ;;
-            --monitor)           INSTALL_MONITOR="true"; shift ;;
-            --no-monitor)        INSTALL_MONITOR="false"; shift ;;
-            --remove-monitor)    REMOVE_MONITOR="true"; shift ;;
             --remove-swap)       REMOVE_SWAP="true"; shift ;;
             --force|-y)          NO_INTERACTIVE="true"; shift ;;
             --help)              show_help; exit 0 ;;
@@ -709,13 +593,6 @@ main() {
 
     # Naplózás inicializálása
     mkdir -p "$(dirname "$LOG_FILE")" "$BACKUP_DIR"
-
-    # --remove-monitor (különálló művelet, nem csinál semmi mást)
-    if [[ "$REMOVE_MONITOR" == "true" ]]; then
-        banner "Monitorozás eltávolítása"
-        remove_monitor
-        exit 0
-    fi
 
     # --remove-swap (különálló művelet, swap fájl + fstab eltávolítása)
     if [[ "$REMOVE_SWAP" == "true" ]]; then
@@ -752,9 +629,6 @@ main() {
             info "A meglévő swap fájl változatlan maradna."
         }
         update_fstab "$SWAP_FILE"
-        if [[ "$INSTALL_MONITOR" != "false" ]]; then
-            install_monitor
-        fi
         dry_run_summary
         exit 0
     fi
@@ -768,10 +642,6 @@ main() {
     if [[ "$NO_TUNE" != "true" ]]; then
         printf "    - Rendszerparaméterek (sysctl) finomhangolása\n"
     fi
-
-    if [[ "$INSTALL_MONITOR" != "false" ]]; then
-        printf "    - Memória monitorozás (cron job)\n"
-    fi
     printf "\n"
 
     if ! confirm "Folytatjuk a műveleteket?" "n"; then
@@ -781,7 +651,7 @@ main() {
     printf "\n"
 
     # --- Swap fájl létrehozása ---
-    banner "1/3 Swap fájl létrehozása"
+    banner "1/2 Swap fájl létrehozása"
     printf "\n"
     if ! create_swap_file "$SWAP_FILE" "$SWAP_SIZE_MB"; then
         info "A meglévő swap fájl változatlan marad, folytatás a többi feladattal."
@@ -791,24 +661,12 @@ main() {
 
     # --- sysctl finomhangolás ---
     if [[ "$NO_TUNE" != "true" ]]; then
-        banner "2/3 Rendszerparaméterek finomhangolása"
+        banner "2/2 Rendszerparaméterek finomhangolása"
         printf "\n"
         if confirm "Alkalmazzuk a sysctl optimalizációkat?" "y"; then
             apply_sysctl_all
         else
             info "sysctl finomhangolás kihagyva."
-        fi
-    fi
-    printf "\n"
-
-    # --- Monitorozás ---
-    if [[ "$INSTALL_MONITOR" != "false" ]]; then
-        if [[ "$INSTALL_MONITOR" == "true" ]] || confirm "Telepítsünk memória monitorozó cron job-ot?" "n"; then
-            banner "3/3 Monitorozás telepítése"
-            printf "\n"
-            install_monitor
-        else
-            info "Monitorozás kihagyva."
         fi
     fi
     printf "\n"
@@ -830,10 +688,6 @@ main() {
 
     printf "\n"
     printf "  Naplófájl:     ${C_CYAN}%s${C_RESET}\n" "$LOG_FILE"
-
-    if [[ "$INSTALL_MONITOR" != "false" ]] && command -v crontab &>/dev/null && crontab -l 2>/dev/null | grep -q "swap_monitor.sh"; then
-        printf "  Monitor log:   ${C_CYAN}%s/%s_ÉÉÉÉHHNN.log${C_RESET}\n" "$MONITOR_LOG_DIR" "$MONITOR_LOG_PREFIX"
-    fi
     printf "\n"
 }
 
