@@ -8,6 +8,8 @@ set -euo pipefail
 # --- Konfigurációs konstansok ------------------------------------------------
 DEFAULT_SWAP_FILE="/swapfile"
 SWAP_PRIORITY=10
+# Kézi --swap-size minimuma (MB). Az automatikus méretezést NEM érinti.
+MIN_SWAP_SIZE_MB=512
 
 # Swappiness: minél kisebb, annál kevésbé swap-el a kernel
 VM_SWAPPINESS=10
@@ -502,7 +504,7 @@ dry_run_summary() {
         if [[ "$existing_size" -eq "$SWAP_SIZE_MB" ]]; then
             printf "  ${C_GREEN}A meglévő fájl mérete megfelelő, csere nem szükséges.${C_RESET}\n"
         else
-            printf "  ${C_YELLOW}A meglévő fájl (%s) le lesz cserélve.${C_RESET}\n" "$(human_size "$existing_size")"
+            printf "  ${C_YELLOW}A meglévő fájl (%s) eltérő méretű – normál futásban lecserélve lenne.${C_RESET}\n" "$(human_size "$existing_size")"
         fi
     fi
     printf "\n"
@@ -531,7 +533,7 @@ Használat: sudo ./swap_optimalizalo.sh [OPCIÓK]
 Opciók:
   --dry-run              Csak szimuláció, nem módosít semmit
   --rollback             Eredeti sysctl beállítások visszaállítása
-  --swap-size <MB>       Swap fájl méretének kézi megadása MB-ban
+  --swap-size <MB>       Swap fájl méretének kézi megadása MB-ban (min. 512)
   --swap-file <PATH>     Swap fájl elérési útja (alapértelmezett: /swapfile)
   --no-tune              Csak swap fájl létrehozása, sysctl finomhangolás nélkül
   --remove-swap         Swap fájl + /etc/fstab bejegyzés eltávolítása
@@ -612,6 +614,8 @@ main() {
         SWAP_SIZE_MB="$(calc_swap_size_mb "$ram_mb")"
     elif [[ ! "$SWAP_SIZE_MB" =~ ^[1-9][0-9]*$ ]]; then
         die "A --swap-size értéke pozitív egész szám (MB) kell legyen, nem: %s" "$SWAP_SIZE_MB"
+    elif (( SWAP_SIZE_MB < MIN_SWAP_SIZE_MB )); then
+        die "A --swap-size minimum %d MB. Megadott érték: %s" "$MIN_SWAP_SIZE_MB" "$SWAP_SIZE_MB"
     fi
 
     show_system_info
