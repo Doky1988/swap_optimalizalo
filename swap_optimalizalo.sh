@@ -193,11 +193,6 @@ backup_sysctl() {
         done
     } > "$backup_file"
 
-    # Biztonsági másolat a sysctl.conf-ról
-    if [[ -f /etc/sysctl.conf ]]; then
-        cp /etc/sysctl.conf "$BACKUP_DIR/sysctl.conf.bak_$(date +%Y%m%d_%H%M%S)"
-    fi
-
     printf "%s" "$backup_file"
 }
 
@@ -304,21 +299,22 @@ rollback_sysctl() {
             *" $key "*) ;;
             *) info "  %-40s kihagyva (nem kezelt kulcs)" "$key"; continue ;;
         esac
+
+        # 1. Futásidejű érték visszaállítása
         if sysctl -w "$key=$val" &>/dev/null; then
             success "  %-40s → %s" "$key" "$val"
         else
             warn "  %-40s visszaállítása nem sikerült" "$key"
         fi
+
+        # 2. /etc/sysctl.conf: csak ennek a kulcsnak a sorait cseréljük,
+        #    minden más bejegyzés érintetlen marad
+        sed -i "\|^[[:space:]]*${key}[[:space:]]*=|d" /etc/sysctl.conf
+        printf "%s = %s\n" "$key" "$val" >> /etc/sysctl.conf
     done < "$latest_backup"
 
-    # sysctl.conf visszaállítása
-    local sysctl_bak
-    sysctl_bak="$(find "$BACKUP_DIR" -maxdepth 1 -name 'sysctl.conf.bak_*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
-    if [[ -n "$sysctl_bak" ]]; then
-        cp "$sysctl_bak" /etc/sysctl.conf
-        success "/etc/sysctl.conf visszaállítva: ${C_CYAN}%s${C_RESET}" "$sysctl_bak"
-        sysctl -p &>/dev/null || true
-    fi
+    success "/etc/sysctl.conf kulcsonként visszaállítva (más bejegyzések érintetlenek)"
+    sysctl -p &>/dev/null || true
 
     printf "\n"
     success "Visszaállítás kész."
