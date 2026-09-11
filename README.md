@@ -22,12 +22,11 @@
 - **Meglévő swap biztonsága** — ha nemet mondasz a cserére, a meglévő swap **aktív marad**, nem lesz véletlenül lekapcsolva
 - **Több swap felismerése** — ha a rendszeren más swap is aktív, a script jelzi, és **nem nyúl hozzá**
 - **Swap fájl létrehozása és aktiválása** — `fallocate` vagy `dd` módszerrel, `/etc/fstab` bejegyzéssel, `chmod 600` jogosultsággal
-- **Memória fókuszú sysctl finomhangolás** — kizárólag `vm.swappiness`, `vm.vfs_cache_pressure`, `vm.dirty_ratio`, `vm.dirty_background_ratio` (hálózati tuning nélkül)
-- **Garantált perzisztencia** — a kívánt sysctl értékek mindig bekerülnek az `/etc/sysctl.conf`-ba, így reboot után is érvényben maradnak
+- **Swap fókuszú sysctl finomhangolás** — kizárólag `vm.swappiness` (writeback/filesystem-cache tuning nélkül)
+- **Garantált perzisztencia** — a kívánt sysctl érték mindig bekerül az `/etc/sysctl.conf`-ba, így reboot után is érvényben marad
 - **Dry-run mód** — `--dry-run` kapcsolóval minden művelet szimulálható, tényleges módosítás nélkül
-- **Visszaállítás** — `--rollback` kapcsolóval az eredeti sysctl értékek visszaállíthatók (csak a script által kezelt kulcsok)
 - **Interaktív és automatikus mód** — alapértelmezetten minden lépésnél megerősítést kér, `--force` / `-y` flaggel teljesen automatikus
-- **Biztonsági mentések** — minden módosítás előtt időbélyegzős mentés készül az eredeti sysctl értékekről és konfigurációs fájlokról
+- **Biztonsági mentés** — az `/etc/fstab` módosítása előtt időbélyegzős mentés készül
 - **Részletes naplózás** — minden művelet naplózva a `/var/log/swap_optimalizalo.log` fájlba
 - **Dinamikus terminál igazítás** — a fejléc automatikusan középre igazodik a terminál szélességéhez
 
@@ -69,7 +68,6 @@ sudo ./swap_optimalizalo.sh --dry-run
 | Kapcsoló | Leírás |
 |----------|--------|
 | `--dry-run` | Csak szimuláció — mindent megjelenít, de nem módosít semmit |
-| `--rollback` | Eredeti sysctl beállítások visszaállítása a biztonsági mentésből |
 | `--swap-size <MB>` | Swap fájl méretének kézi megadása MB-ban (min. 512, felülbírálja az automatikus kalkulációt) |
 | `--swap-file <PATH>` | Swap fájl elérési útja (alapértelmezett: `/swapfile`) |
 | `--no-tune` | Csak swap fájl létrehozása — sysctl finomhangolás nélkül |
@@ -91,18 +89,15 @@ Kézi méret megadása a `--swap-size` kapcsolóval lehetséges (minimum 512 MB)
 
 ---
 
-## 🔧 Sysctl optimalizációk
+## 🔧 Sysctl optimalizáció
 
-A script **kizárólag memória fókuszú** — hálózati tuningot és `vm.min_free_kbytes` módosítást nem végez.
+A script **kizárólag swap-fókuszú** — csak a `vm.swappiness` paramétert módosítja. Writeback (`vm.dirty_*`) és filesystem-cache (`vm.vfs_cache_pressure`) beállításokat szándékosan nem érint, mert azok nem a swap viselkedését szabályozzák, és a kernel alapértékei a legtöbb workloadnál megfelelőek.
 
 | Paraméter | Alapértelmezett | Optimalizált | Hatás |
 |-----------|-----------------|-------------|-------|
 | `vm.swappiness` | 60 | 10 | Ritkább swap használat |
-| `vm.vfs_cache_pressure` | 100 | 50 | Inode/dentry cache agresszívabb megtartása |
-| `vm.dirty_ratio` | 20 | 10 | Kevesebb dirty adat lehet a RAM-ban |
-| `vm.dirty_background_ratio` | 10 | 5 | A kernel korábban elkezdi kiírni a dirty adatokat |
 
-> **Perzisztencia garancia:** ha a tuning engedélyezve van, a kívánt értékek **minden esetben** bekerülnek az `/etc/sysctl.conf`-ba — akkor is, ha a futás pillanatában már megfelelőek. Így nem fordulhat elő, hogy a script futása után minden jó, de reboot után visszaáll az alapértelmezett érték.
+> **Perzisztencia garancia:** ha a tuning engedélyezve van, a kívánt érték **minden esetben** bekerül az `/etc/sysctl.conf`-ba — akkor is, ha a futás pillanatában már megfelelő. Így nem fordulhat elő, hogy a script futása után minden jó, de reboot után visszaáll az alapértelmezett érték.
 
 > **Irányfüggő alkalmazás:** futásidőben a script csak akkor módosítja az értéket, ha az javítást jelent — a már megfelelő értékhez nem nyúl.
 
@@ -142,15 +137,9 @@ no label, UUID=ad88f124-5c49-4dee-ae1e-6749fff2d7ec
 
 2/2 Rendszerparaméterek finomhangolása
 
-[?] Alkalmazzuk a sysctl optimalizációkat? [Y/n]: y
 Rendszerparaméterek finomhangolása (sysctl)
 
-[OK]   Eredeti sysctl értékek mentve: /var/backups/swap_optimalizalo/sysctl_backup_20260809_153000.conf
-
 [OK]     vm.swappiness                            60 → 10
-[OK]     vm.vfs_cache_pressure                    100 → 50
-[OK]     vm.dirty_ratio                           20 → 10
-[OK]     vm.dirty_background_ratio                10 → 5
 
 [OK]   sysctl -p alkalmazása...
 
@@ -170,18 +159,20 @@ Rendszerparaméterek finomhangolása (sysctl)
 
 ## 🔄 Visszaállítás
 
-Ha bármilyen probléma adódna, a módosítások visszaállíthatók:
+A `vm.swappiness` módosítás kézzel egyszerűen visszaállítható:
 
 ```bash
-# sysctl értékek visszaállítása
-sudo ./swap_optimalizalo.sh --rollback
+# Érték visszaállítása futásidőben
+sudo sysctl -w vm.swappiness=60
+
+# /etc/sysctl.conf bejegyzés törlése
+sudo sed -i '/^[[:space:]]*vm.swappiness[[:space:]]*=/d' /etc/sysctl.conf
 
 # Swap fájl eltávolítása
 sudo ./swap_optimalizalo.sh --remove-swap
 ```
 
-A biztonsági mentések a `/var/backups/swap_optimalizalo/` könyvtárban találhatók.
-A rollback csak a script által kezelt 4 sysctl kulcsot állítja vissza.
+Az `/etc/fstab` biztonsági mentései a `/var/backups/swap_optimalizalo/` könyvtárban találhatók.
 
 ---
 
@@ -200,9 +191,9 @@ A rollback csak a script által kezelt 4 sysctl kulcsot állítja vissza.
 |------|--------|
 | `/swapfile` | A létrehozott swap fájl (alapértelmezett hely) |
 | `/etc/fstab` | Swap bejegyzés hozzáadva (boot után automatikus aktiválás) |
-| `/etc/sysctl.conf` | Optimalizált rendszerparaméterek (4 memória kulcs) |
+| `/etc/sysctl.conf` | Optimalizált rendszerparaméter (1 memória kulcs: `vm.swappiness`) |
 | `/var/log/swap_optimalizalo.log` | Részletes műveleti napló |
-| `/var/backups/swap_optimalizalo/` | Biztonsági mentések könyvtára |
+| `/var/backups/swap_optimalizalo/` | Az `/etc/fstab` biztonsági mentései |
 
 ---
 
