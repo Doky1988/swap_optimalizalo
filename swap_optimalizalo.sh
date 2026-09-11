@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Swap & Memória Optimalizáló Script - Ubuntu/Debian
+# Swap Optimalizáló Script - Ubuntu/Debian
 # Készítette: Doky | 2026.08.09
 # =============================================================================
 set -euo pipefail
@@ -13,14 +13,6 @@ MIN_SWAP_SIZE_MB=512
 
 # Swappiness: minél kisebb, annál kevésbé swap-el a kernel
 VM_SWAPPINESS=10
-# VFS cache pressure: 100 alapértelmezett, kisebb = agresszívebben tartja inode/dentry cache-t
-VM_VFS_CACHE_PRESSURE=50
-# Dirty oldal arány: a RAM ennyi százaléka lehet még kiíratlan dirty adat,
-# mielőtt a kernel szinkron írásra kényszerül. 10% = mérsékelten konzervatív.
-VM_DIRTY_RATIO=10
-# Háttérbeli kiírás küszöbértéke: ennél az aránynál a kernel magától elkezdi
-# kiírni a dirty adatokat, mielőtt a dirty_ratio-t elérné.
-VM_DIRTY_BACKGROUND_RATIO=5
 
 BACKUP_DIR="/var/backups/swap_optimalizalo"
 LOG_FILE="/var/log/swap_optimalizalo.log"
@@ -36,10 +28,16 @@ C_CYAN="\033[36m"
 
 # --- Log & kimenet függvények ------------------------------------------------
 log_msg() {
+    # Dry-run módban semmit nem írunk a lemezre
+    [[ "$DRY_RUN" == "true" ]] && return 0
     local level="$1" msg="$2"
     local timestamp
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
-    printf "%s [%s] %s\n" "$timestamp" "$level" "$msg" >> "$LOG_FILE"
+    # Ha a napló nem írható (pl. nem root futtatás), csendben kihagyjuk
+    if [[ -e "$LOG_FILE" && ! -w "$LOG_FILE" ]] || [[ ! -w "$(dirname "$LOG_FILE")" ]]; then
+        return 0
+    fi
+    printf "%s [%s] %s\n" "$timestamp" "$level" "$msg" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 info()    { local fmt="$1"; shift; printf "${C_BLUE}[INFO]${C_RESET} ${fmt}\n" "$@"; log_msg "INFO" "$(printf "$fmt" "$@")"; }
@@ -145,7 +143,7 @@ show_system_info() {
     ram_mb="$(get_ram_mb)"
     swap_mb="$(get_current_swap_mb)"
 
-    _center_box "Swap & Memória Optimalizáló"
+    _center_box "Swap Optimalizáló"
     printf "\n"
     printf "  ${C_BOLD}Rendszerinformációk:${C_RESET}\n"
     printf "  ─────────────────────────────────────────────\n"
@@ -180,24 +178,6 @@ show_system_info() {
 }
 
 # --- Sysctl segédfüggvények --------------------------------------------------
-backup_sysctl() {
-    local backup_file
-    backup_file="$BACKUP_DIR/sysctl_backup_$(date +%Y%m%d_%H%M%S).conf"
-    mkdir -p "$BACKUP_DIR"
-
-    {
-        printf "# Eredeti sysctl értékek mentése - %s\n" "$(date)"
-        for key in vm.swappiness vm.vfs_cache_pressure \
-                   vm.dirty_ratio vm.dirty_background_ratio; do
-            if sysctl -e "$key" &>/dev/null; then
-                printf "%s = %s\n" "$key" "$(sysctl -n "$key")"
-            fi
-        done
-    } > "$backup_file"
-
-    printf "%s" "$backup_file"
-}
-
 _sctl_should_apply() {
     local direction="$1" current="$2" target="$3"
     case "$direction" in
@@ -236,7 +216,9 @@ apply_sysctl_value() {
 
 persist_sysctl_value() {
     local key="$1" val="$2"
-    local pattern="^[[:space:]]*${key}[[:space:]]*="
+    local esc_key pattern
+    esc_key="${key//./\.}"
+    pattern="^[[:space:]]*${esc_key}[[:space:]]*="
 
     if [[ "$DRY_RUN" == "true" ]]; then
         printf "  ${C_CYAN}[DRY-RUN]${C_RESET} ${key}=${val} → /etc/sysctl.conf\n"
@@ -254,75 +236,26 @@ apply_sysctl_all() {
     banner "Rendszerparaméterek finomhangolása (sysctl)"
     printf "\n"
 
-    local backup_file
-    backup_file="$(backup_sysctl)"
-    success "Eredeti sysctl értékek mentve: ${C_CYAN}%s${C_RESET}" "$backup_file"
-    printf "\n"
-
     # max = lower is better, futásidőben csak akkor állítjuk ha a jelenlegi > cél.
     # A perzisztencia MINDIG lefut, hogy reboot után is a kívánt érték legyen érvényben.
     apply_sysctl_value vm.swappiness "$VM_SWAPPINESS" max
     persist_sysctl_value vm.swappiness "$VM_SWAPPINESS"
 
-    apply_sysctl_value vm.vfs_cache_pressure "$VM_VFS_CACHE_PRESSURE" max
-    persist_sysctl_value vm.vfs_cache_pressure "$VM_VFS_CACHE_PRESSURE"
-
-    apply_sysctl_value vm.dirty_ratio "$VM_DIRTY_RATIO" max
-    persist_sysctl_value vm.dirty_ratio "$VM_DIRTY_RATIO"
-
-    apply_sysctl_value vm.dirty_background_ratio "$VM_DIRTY_BACKGROUND_RATIO" max
-    persist_sysctl_value vm.dirty_background_ratio "$VM_DIRTY_BACKGROUND_RATIO"
-
     printf "\n"
-    success "sysctl -p alkalmazása..."
-    if [[ "$DRY_RUN" != "true" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        printf "  ${C_CYAN}[DRY-RUN]${C_RESET} sysctl -p (újratöltés)\n"
+    else
+        success "sysctl -p alkalmazása..."
         sysctl -p &>/dev/null || true
     fi
 }
 
-# --- Rollback ----------------------------------------------------------------
-MANAGED_SYSCTL_KEYS="vm.swappiness vm.vfs_cache_pressure vm.dirty_ratio vm.dirty_background_ratio"
-
-rollback_sysctl() {
-    local latest_backup
-    latest_backup="$(find "$BACKUP_DIR" -maxdepth 1 -name 'sysctl_backup_*.conf' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
-
-    if [[ -z "$latest_backup" ]]; then
-        die "Nincs elérhető sysctl biztonsági mentés a következő helyen: $BACKUP_DIR"
-    fi
-
-    banner "Sysctl értékek visszaállítása"
-    printf "Visszaállítás forrása: ${C_CYAN}%s${C_RESET}\n\n" "$latest_backup"
-
-    while IFS=' = ' read -r key val; do
-        [[ -z "$key" || "$key" =~ ^# ]] && continue
-        # Csak a script által kezelt kulcsokat állítjuk vissza
-        case " $MANAGED_SYSCTL_KEYS " in
-            *" $key "*) ;;
-            *) info "  %-40s kihagyva (nem kezelt kulcs)" "$key"; continue ;;
-        esac
-
-        # 1. Futásidejű érték visszaállítása
-        if sysctl -w "$key=$val" &>/dev/null; then
-            success "  %-40s → %s" "$key" "$val"
-        else
-            warn "  %-40s visszaállítása nem sikerült" "$key"
-        fi
-
-        # 2. /etc/sysctl.conf: csak ennek a kulcsnak a sorait cseréljük,
-        #    minden más bejegyzés érintetlen marad
-        sed -i "\|^[[:space:]]*${key}[[:space:]]*=|d" /etc/sysctl.conf
-        printf "%s = %s\n" "$key" "$val" >> /etc/sysctl.conf
-    done < "$latest_backup"
-
-    success "/etc/sysctl.conf kulcsonként visszaállítva (más bejegyzések érintetlenek)"
-    sysctl -p &>/dev/null || true
-
-    printf "\n"
-    success "Visszaállítás kész."
+# --- Swap fájl műveletek -----------------------------------------------------
+_regex_escape() {
+    # Minden karaktert literálként kezelünk (BRE-kompatibilis, GNU grep/sed alatt is)
+    printf '%s' "$1" | sed 's/[^^]/[&]/g; s/\^/\\^/g'
 }
 
-# --- Swap fájl műveletek -----------------------------------------------------
 deactivate_existing_swapfile() {
     local swapfile="$1"
     if swapon --show | awk -v f="$swapfile" '$1 == f {found=1} END {exit !found}'; then
@@ -364,9 +297,13 @@ create_swap_file() {
             if ! _is_swap_active "$swapfile"; then
                 if [[ "$DRY_RUN" == "true" ]]; then
                     printf "  ${C_CYAN}[DRY-RUN]${C_RESET} A swap fájl inaktív, aktiválnánk: swapon --priority %d %s\n" "$SWAP_PRIORITY" "$swapfile"
-                else
-                    swapon --priority "$SWAP_PRIORITY" "$swapfile"
+                    return 0
+                fi
+                if swapon --priority "$SWAP_PRIORITY" "$swapfile"; then
                     success "A meglévő swap fájl aktiválva: %s" "$swapfile"
+                else
+                    warn "A meglévő swap fájl aktiválása nem sikerült: %s" "$swapfile"
+                    return 1
                 fi
             else
                 info "A swap fájl aktív, minden rendben."
@@ -420,15 +357,18 @@ create_swap_file() {
 
     chmod 600 "$swapfile"
     mkswap "$swapfile"
-    swapon --priority "$SWAP_PRIORITY" "$swapfile"
+    if ! swapon --priority "$SWAP_PRIORITY" "$swapfile"; then
+        die "Az új swap fájl aktiválása nem sikerült: %s" "$swapfile"
+    fi
     success "Swap fájl létrehozva és aktiválva: %s" "$swapfile"
 }
 
 update_fstab() {
-    local swapfile="$1"
+    local swapfile="$1" esc_file
+    esc_file="$(_regex_escape "$swapfile")"
 
     # Ellenőrizzük, hogy már szerepel-e a fstab-ban
-    if grep -q "^[^#]*${swapfile}[[:space:]]" /etc/fstab 2>/dev/null; then
+    if grep -q "^[^#]*${esc_file}[[:space:]]" /etc/fstab 2>/dev/null; then
         info "%s már szerepel az /etc/fstab-ban, kihagyás." "$swapfile"
         return 0
     fi
@@ -445,6 +385,9 @@ update_fstab() {
 
 # --- Swap eltávolítás ---------------------------------------------------------
 remove_swap() {
+    local esc_file
+    esc_file="$(_regex_escape "$SWAP_FILE")"
+
     if [[ "$DRY_RUN" == "true" ]]; then
         if swapon --show | awk -v f="$SWAP_FILE" '$1 == f {found=1} END {exit !found}'; then
             printf "  ${C_CYAN}[DRY-RUN]${C_RESET} swapoff %s\n" "$SWAP_FILE"
@@ -474,9 +417,9 @@ remove_swap() {
         info "A swap fájl nem található: %s" "$SWAP_FILE"
     fi
 
-    if grep -q "^[^#]*${SWAP_FILE}[[:space:]]" /etc/fstab 2>/dev/null; then
+    if grep -q "^[^#]*${esc_file}[[:space:]]" /etc/fstab 2>/dev/null; then
         cp /etc/fstab "$BACKUP_DIR/fstab.bak_$(date +%Y%m%d_%H%M%S)"
-        sed -i "\|^[^#]*${SWAP_FILE}[[:space:]]|d" /etc/fstab
+        sed -i "\|^[^#]*${esc_file}[[:space:]]|d" /etc/fstab
         success "%s bejegyzés törölve az /etc/fstab-ból" "$SWAP_FILE"
     else
         info "%s nem található az /etc/fstab-ban" "$SWAP_FILE"
@@ -513,9 +456,6 @@ dry_run_summary() {
         printf "  ${C_BOLD}sysctl finomhangolás:${C_RESET}\n"
         printf "  ───────────────────────\n"
         printf "  vm.swappiness                 → %s\n" "$VM_SWAPPINESS"
-        printf "  vm.vfs_cache_pressure         → %s\n" "$VM_VFS_CACHE_PRESSURE"
-        printf "  vm.dirty_ratio                → %s\n" "$VM_DIRTY_RATIO"
-        printf "  vm.dirty_background_ratio     → %s\n" "$VM_DIRTY_BACKGROUND_RATIO"
         printf "\n"
     fi
 
@@ -525,14 +465,13 @@ dry_run_summary() {
 # --- Súgó --------------------------------------------------------------------
 show_help() {
     cat << 'EOF'
-Swap & Memória Optimalizáló Script - Ubuntu/Debian
+Swap Optimalizáló Script - Ubuntu/Debian
 ====================================================
 
 Használat: sudo ./swap_optimalizalo.sh [OPCIÓK]
 
 Opciók:
   --dry-run              Csak szimuláció, nem módosít semmit
-  --rollback             Eredeti sysctl beállítások visszaállítása
   --swap-size <MB>       Swap fájl méretének kézi megadása MB-ban (min. 512)
   --swap-file <PATH>     Swap fájl elérési útja (alapértelmezett: /swapfile)
   --no-tune              Csak swap fájl létrehozása, sysctl finomhangolás nélkül
@@ -545,7 +484,6 @@ Példák:
   sudo ./swap_optimalizalo.sh                  # Interaktív mód
   sudo ./swap_optimalizalo.sh --force          # Automatikus futtatás
   sudo ./swap_optimalizalo.sh --swap-size 8192 # 8 GB swap fájl
-  sudo ./swap_optimalizalo.sh --rollback       # Visszaállítás
   sudo ./swap_optimalizalo.sh --remove-swap    # Swap fájl eltávolítása
 
 Swap méretezési logika (automatikus, ha nincs --swap-size):
@@ -553,11 +491,8 @@ Swap méretezési logika (automatikus, ha nincs --swap-size):
   RAM 5-63 GB     → 4 GB swap
   RAM ≥ 64 GB     → 8 GB swap
 
-Sysctl optimalizációk (memória fókusz, hálózati tuning nélkül):
+Sysctl optimalizáció (csak swap-fókusz):
   vm.swappiness              → 10
-  vm.vfs_cache_pressure      → 50
-  vm.dirty_ratio             → 10
-  vm.dirty_background_ratio  → 5
 EOF
 }
 
@@ -565,7 +500,6 @@ EOF
 main() {
     # Alapértelmezések
     DRY_RUN="false"
-    ROLLBACK="false"
     SWAP_SIZE_MB=""
     SWAP_FILE="$DEFAULT_SWAP_FILE"
     NO_TUNE="false"
@@ -576,9 +510,8 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dry-run)           DRY_RUN="true"; shift ;;
-            --rollback)          ROLLBACK="true"; shift ;;
-            --swap-size)         SWAP_SIZE_MB="$2"; shift 2 ;;
-            --swap-file)         SWAP_FILE="$2"; shift 2 ;;
+            --swap-size)         [[ $# -ge 2 ]] || die "A --swap-size opcióhoz érték kell (MB)!"; SWAP_SIZE_MB="$2"; shift 2 ;;
+            --swap-file)         [[ $# -ge 2 ]] || die "A --swap-file opcióhoz elérési út kell!"; SWAP_FILE="$2"; shift 2 ;;
             --no-tune)           NO_TUNE="true"; shift ;;
             --remove-swap)       REMOVE_SWAP="true"; shift ;;
             --force|-y)          NO_INTERACTIVE="true"; shift ;;
@@ -587,21 +520,22 @@ main() {
         esac
     done
 
+    # Elérési út validálása (fstab/mkswap csak abszolút útvonallal működik megbízhatóan)
+    if [[ "$SWAP_FILE" != /* ]]; then
+        die "A swap fájl elérési útja abszolút útvonal kell legyen (/-rel kezdődjön): %s" "$SWAP_FILE"
+    fi
+
     check_root
 
-    # Naplózás inicializálása
-    mkdir -p "$(dirname "$LOG_FILE")" "$BACKUP_DIR"
+    # Naplózás inicializálása (dry-run módban nem hozunk létre semmit)
+    if [[ "$DRY_RUN" != "true" ]]; then
+        mkdir -p "$(dirname "$LOG_FILE")" "$BACKUP_DIR"
+    fi
 
     # --remove-swap (különálló művelet, swap fájl + fstab eltávolítása)
     if [[ "$REMOVE_SWAP" == "true" ]]; then
         banner "Swap fájl eltávolítása"
         remove_swap
-        exit 0
-    fi
-
-    # Rollback mód
-    if [[ "$ROLLBACK" == "true" ]]; then
-        rollback_sysctl
         exit 0
     fi
 
@@ -663,11 +597,7 @@ main() {
     if [[ "$NO_TUNE" != "true" ]]; then
         banner "2/2 Rendszerparaméterek finomhangolása"
         printf "\n"
-        if confirm "Alkalmazzuk a sysctl optimalizációkat?" "y"; then
-            apply_sysctl_all
-        else
-            info "sysctl finomhangolás kihagyva."
-        fi
+        apply_sysctl_all
     fi
     printf "\n"
 
