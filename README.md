@@ -10,7 +10,7 @@
 
 <p align="center"><strong>Interaktív bash szkript Debian/Ubuntu VPS-ek swap fájl létrehozásához és a <code>vm.swappiness</code> finomhangolásához.</strong></p>
 
-<p align="center">VPS-barát swap méretezés, konzisztens meglévő-fájl kezelés, biztos sysctl perzisztencia — biztonsági mentésekkel, dry-run móddal és visszaállítási lehetőséggel.</p>
+<p align="center">VPS-barát swap méretezés, konzisztens meglévő-fájl kezelés, biztos sysctl perzisztencia — biztonsági mentésekkel, dry-run móddal és visszaállítási útmutatóval.</p>
 
 ---
 
@@ -25,10 +25,10 @@
 - **Swap fókuszú sysctl finomhangolás** — kizárólag `vm.swappiness`
 - **Garantált perzisztencia** — a kívánt sysctl érték mindig bekerül az `/etc/sysctl.conf`-ba, így reboot után is érvényben marad
 - **Dry-run mód** — `--dry-run` kapcsolóval minden művelet szimulálható, tényleges módosítás nélkül
-- **Interaktív és automatikus mód** — alapértelmezetten minden lépésnél megerősítést kér, `--force` / `-y` flaggel teljesen automatikus
+- **Interaktív és automatikus mód** — alapértelmezetten a fontos műveleteknél megerősítést kér, `--force` / `-y` flaggel teljesen automatikus
 - **Biztonsági mentés** — az `/etc/fstab` módosítása előtt időbélyegzős mentés készül
 - **Részletes naplózás** — minden művelet naplózva a `/var/log/swap_optimalizalo.log` fájlba (dry-run módban nincs naplózás)
-- **Dinamikus terminál igazítás** — a fejléc automatikusan középre igazodik a terminál szélességéhez
+- **Középre igazított fejléc** — a fejléc fix szélességű dobozban, középre igazítva jelenik meg
 
 ---
 
@@ -196,6 +196,5 @@ Az `/etc/fstab` biztonsági mentései a `/var/backups/swap_optimalizalo/` könyv
 | `/var/backups/swap_optimalizalo/` | Az `/etc/fstab` biztonsági mentései |
 
 ---
-
 ## ❤️ Készítette: Doky  
 📅 2026.08.09
